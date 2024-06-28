@@ -1,4 +1,4 @@
-#!/bin/env python3
+#!/usr/bin/env python3
 #
 # Simple LZH archive extractor -- unlha.py
 # Python version copyright (c) 2024 Yuichi Nakamura (@yunkya2)
