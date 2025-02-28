@@ -459,22 +459,26 @@ class Huf:
     TBIT = 5
     CBIT = 9
 
-    BUFBITS = 16 # >= log2(MAXBUF), defined in lha_macro.h
-    EXTRABITS = 8 # >= log2(F-THRESHOLD+258-N1), defined in lha_macro.h
-    LENFIELD = 4 # bit size of length field for tree output, defined in lha_macro.h
-    N1 = 286 # alphabet size in lha_macro.h
-    NP = (8 * 1024 // 64) # defined in shuf.c
+    """(from lha_macro.h for shuf.c)"""
+    N1 = 286        # alphabet size
+    EXTRABITS = 8   # >= log2(F-THRESHOLD+258-N1)
+    BUFBITS = 16    # >= log2(MAXBUF)
+    LENFIELD = 4    # bit size of length field for tree output
+
+    """(from shuf.c)"""
+    NP = (8 * 1024 // 64)
     fixed = [
         [3, 0x01, 0x04, 0x0C, 0x18, 0x30, 0] + [0] * (16 - 7),  # old compatible
         [2, 0x01, 0x01, 0x03, 0x06, 0x0D, 0x1F, 0x4E, 0] + [0] * (16 - 9)  # 8K buf
-    ] # defined in shuf.c
+    ]
 
-    N_CHAR = 256 + 60 - THRESHOLD + 1 # defined in lha_macro.h
-    TREESIZE_C = N_CHAR * 2 # defined in lha_macro.h
-    TREESIZE_P = 128 * 2 # defined in lha_macro.h
-    TREESIZE = TREESIZE_C + TREESIZE_P # defined in lha_macro.h
-    ROOT_C = 0 # defined in lha_macro.h
-    ROOT_P = TREESIZE_C # defined in lha_macro.h
+    """(from lha_macro.h for dhuf.c)"""
+    N_CHAR = 256 + 60 - THRESHOLD + 1
+    TREESIZE_C = N_CHAR * 2
+    TREESIZE_P = 128 * 2
+    TREESIZE = TREESIZE_C + TREESIZE_P
+    ROOT_C = 0
+    ROOT_P = TREESIZE_C
 
     def __init__(self, interface):
 
@@ -507,6 +511,7 @@ class Huf:
         self.pt_len = [0] * self.NPT
         self.pt_code = [0] * self.NPT
 
+        """(from dhuf.c)"""
         self.child = [0] * self.TREESIZE
         self.parent = [0] * self.TREESIZE
         self.block = [0] * self.TREESIZE
@@ -724,6 +729,28 @@ class Huf:
     def decode_start_st1(self):
         pass
 
+    ############################################################
+    """(from shuf.c)"""
+
+    def decode_start_st0(self):
+        self.np = 1 << (self.interface.dicbit - 6)
+
+    def ready_made(self, method):
+        idx = 0
+        tbl = self.fixed[method]
+        j = tbl[idx]
+        idx += 1
+        weight = 1 << (16 - j)
+        code = 0
+        for i in range(0, self.np):
+            while tbl[idx] == i:
+                j += 1
+                idx += 1
+                weight >>= 1
+            self.pt_len[i] = j
+            self.pt_code[i] = code
+            code += weight
+
     def read_tree_c(self):
         i = 0
         while i < self.N1:
@@ -754,21 +781,13 @@ class Huf:
                     self.pt_table[j] = c
                 return
 
-    def ready_made(self, method):
-        idx = 0
-        tbl = self.fixed[method]
-        j = tbl[idx]
-        idx += 1
-        weight = 1 << (16 - j)
-        code = 0
-        for i in range(0, self.np):
-            while tbl[idx] == i:
-                j += 1
-                idx += 1
-                weight >>= 1
-            self.pt_len[i] = j
-            self.pt_code[i] = code
-            code += weight
+    def decode_start_fix(self):
+        self.n_max = 314
+        self.maxmatch = 60
+        self.np = 1 << (self.interface.dicbit - 6)
+        self.start_c_dyn()
+        self.ready_made(0)
+        self.make_table(self.np, self.pt_len, 8, self.pt_table)
 
     def decode_c_st0(self):
         if self.blocksize == 0: # read block head
@@ -817,8 +836,8 @@ class Huf:
             self.b.fillbuf(self.pt_len[j] - 8)
         return (j << 6) + self.b.getbits(6)
 
-    def decode_start_st0(self):
-        self.np = 1 << (self.interface.dicbit - 6)
+    ############################################################
+    """(from dhuf.c)"""
 
     def start_c_dyn(self):
         self.n1 = 512 if (self.n_max >= 256 + self.maxmatch - self.THRESHOLD + 1) else (self.n_max - 1)
@@ -1040,14 +1059,6 @@ class Huf:
         c = (~c) - self.N_CHAR
         self.update_p(c)
         return (c << 6) + self.b.getbits(6)
-
-    def decode_start_fix(self):
-        self.n_max = 314
-        self.maxmatch = 60
-        self.np = 1 << (self.interface.dicbit - 6)
-        self.start_c_dyn()
-        self.ready_made(0)
-        self.make_table(self.np, self.pt_len, 8, self.pt_table)
 
 ##############################################################################
 
