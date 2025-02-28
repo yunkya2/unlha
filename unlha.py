@@ -2,8 +2,8 @@
 #
 # Simple LZH archive extractor -- unlha.py
 # Python version copyright (c) 2024 Yuichi Nakamura (@yunkya2)
-#  URL: https://github.com/yunkay2/unlha
-#  LICENSE condition: https://github.com/yunkay2/unlha/blob/main/LICENSE
+#  URL: https://github.com/yunkya2/unlha
+#  LICENSE condition: https://github.com/yunkya2/unlha/blob/main/LICENSE
 # ----------------------------------------------------------------
 # This software is derived from "LHa for UNIX with Autoconf"
 #
@@ -1205,7 +1205,7 @@ def unlha(fh, mode, extfiles):
 def usage():
     print('Simple LZH archive extractor -- unlha.py')
     print('Python version copyright (c) 2024 Yuichi Nakamura (@yunkya2)')
-    print(' URL: https://github.com/yunkay2/unlha')
+    print(' URL: https://github.com/yunkya2/unlha')
     print(' LICENSE condition: https://github.com/yunkya2/unlha/blob/main/LICENSE')
     print('----------------------------------------------------------------')
     print('This software is derived from "LHa for UNIX with Autoconf"')
