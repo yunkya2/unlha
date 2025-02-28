@@ -733,7 +733,7 @@ class Huf:
                 self.c_len[i] = 0
             i += 1
             if i == 3 and self.c_len[0] == 1 and self.c_len[1] == 1 and self.c_len[2] == 1:
-                c = self.b.getbits(CBIT)
+                c = self.b.getbits(self.CBIT)
                 for j in range(0, self.N1):
                     self.c_len[j] = 0
                 for j in range(0, 4096):
@@ -746,7 +746,7 @@ class Huf:
         while i < self.NP:
             self.pt_len[i] = self.b.getbits(self.LENFIELD)
             i += 1
-            if i == 3 and pt_len[0] == 1 and pt_len[1] == 1 and pt_len[2] == 1:
+            if i == 3 and self.pt_len[0] == 1 and self.pt_len[1] == 1 and self.pt_len[2] == 1:
                 c = self.b.getbits(self.interface.dicbit - 6)
                 for j in range(0, self.NP):
                     self.pt_len[j] = 0
@@ -782,7 +782,7 @@ class Huf:
         self.blocksize -= 1
         j = self.c_table[self.b.peekbits(12)]
         if j < self.N1:
-            self.b.fillbuf(c_len[j])
+            self.b.fillbuf(self.c_len[j])
         else:
             self.b.fillbuf(12)
             mask = 1 << (16 - 1)
@@ -794,7 +794,7 @@ class Huf:
                 mask >>= 1
                 if j < self.N1:
                     break
-            self.b.fillbuf(c_len[j] - 12)
+            self.b.fillbuf(self.c_len[j] - 12)
         if j == self.N1 - 1:
             j += self.b.getbits(self.EXTRABITS)
         return j
@@ -853,7 +853,7 @@ class Huf:
         self.freq[self.ROOT_P] = 1
         self.child[self.ROOT_P] = ~(self.N_CHAR)
         self.s_node[self.N_CHAR] = self.ROOT_P
-        self.block[self.ROOT_P] = stock[self.avail]
+        self.block[self.ROOT_P] = self.stock[self.avail]
         self.avail += 1
         self.edge[self.block[self.ROOT_P]] = self.ROOT_P
         self.most_p = self.ROOT_P
@@ -863,9 +863,9 @@ class Huf:
 
     def decode_start_dyn(self):
         self.n_max = 286
-        maxmatch = MAXMATCH
-        start_c_dyn()
-        start_p_dyn()
+        maxmatch = self.MAXMATCH
+        self.start_c_dyn()
+        self.start_p_dyn()
 
     def reconst(self, start, end):
         j = start
@@ -969,9 +969,9 @@ class Huf:
         if self.total_p == 0x8000:
             self.reconst(self.ROOT_P, self.most_p + 1)
             self.total_p = self.freq[self.ROOT_P]
-            self.freq[ROOT_P] = 0xffff
+            self.freq[self.ROOT_P] = 0xffff
         q = self.s_node[p + self.N_CHAR]
-        while q != ROOT_P:
+        while q != self.ROOT_P:
             q = self.swap_inc(q)
         self.total_p += 1
 
@@ -989,7 +989,7 @@ class Huf:
             self.freq[self.ROOT_P] = 0xffff
             self.edge[self.block[self.ROOT_P]] += 1
         self.parent[r] = self.parent[q] = self.most_p
-        self.block[q] = stock[self.avail]
+        self.block[q] = self.stock[self.avail]
         self.avail += 1
         self.edge[self.block[q]] = self.s_node[p + self.N_CHAR] = self.most_p = q
         self.update_p(p)
@@ -1021,7 +1021,7 @@ class Huf:
         while decode_count > self.nextcount:
             self.make_new_node(self.nextcount // 64)
             self.nextcount += 64
-            if self.nextcount >= nn:
+            if self.nextcount >= self.nn:
                 self.nextcount = 0xffffffff
         c = self.child[self.ROOT_P]
         buf = self.b.bitbuf
