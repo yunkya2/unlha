@@ -53,7 +53,7 @@ class BitIo:
             self.bitbuf += (self.subbitbuf) >> (self.CHAR_BIT - self.bitcount)
             if self.compsize != 0:
                 self.compsize -= 1
-                if not (c := fh.read(1)):
+                if not (c := self.fh.read(1)):
                     self.compsize = 0
                     c = b'\0'
                     raise RuntimeError("cannot read stream");
@@ -459,7 +459,39 @@ class Huf:
     TBIT = 5
     CBIT = 9
 
+    BUFBITS = 16 # >= log2(MAXBUF), defined in lha_macro.h
+    EXTRABITS = 8 # >= log2(F-THRESHOLD+258-N1), defined in lha_macro.h
+    LENFIELD = 4 # bit size of length field for tree output, defined in lha_macro.h
+    N1 = 286 # alphabet size in lha_macro.h
+    NP = (8 * 1024 // 64) # defined in shuf.c
+    fixed = [
+        [3, 0x01, 0x04, 0x0C, 0x18, 0x30, 0] + [0] * (16 - 7),  # old compatible
+        [2, 0x01, 0x01, 0x03, 0x06, 0x0D, 0x1F, 0x4E, 0] + [0] * (16 - 9)  # 8K buf
+    ] # defined in shuf.c
+
+    N_CHAR = 256 + 60 - THRESHOLD + 1 # defined in lha_macro.h
+    TREESIZE_C = N_CHAR * 2 # defined in lha_macro.h
+    TREESIZE_P = 128 * 2 # defined in lha_macro.h
+    TREESIZE = TREESIZE_C + TREESIZE_P # defined in lha_macro.h
+    ROOT_C = 0 # defined in lha_macro.h
+    ROOT_P = TREESIZE_C # defined in lha_macro.h
+
     def __init__(self, interface):
+
+        """Decoders (from slide.c)"""
+        self.decoders = {
+            b'-lh1-': (self.decode_c_dyn, self.decode_p_st0, self.decode_start_fix),
+            b'-lh2-': (self.decode_c_dyn, self.decode_p_dyn, self.decode_start_dyn),
+            b'-lh3-': (self.decode_c_st0, self.decode_p_st0, self.decode_start_st0),
+            b'-lh4-': (self.decode_c_st1, self.decode_p_st1, self.decode_start_st1),
+            b'-lh5-': (self.decode_c_st1, self.decode_p_st1, self.decode_start_st1),
+            b'-lh6-': (self.decode_c_st1, self.decode_p_st1, self.decode_start_st1),
+            b'-lh7-': (self.decode_c_st1, self.decode_p_st1, self.decode_start_st1),
+        }
+
+        if interface.header.method not in self.decoders:
+            raise RuntimeError("unknown decoder")
+
         self.interface = interface
         self.pbit = interface.pbit
         self.np = interface.np
@@ -473,6 +505,17 @@ class Huf:
         self.pt_table = [0] * 256
         self.c_len = [0] * self.NC
         self.pt_len = [0] * self.NPT
+        self.pt_code = [0] * self.NPT
+
+        self.child = [0] * self.TREESIZE
+        self.parent = [0] * self.TREESIZE
+        self.block = [0] * self.TREESIZE
+        self.edge = [0] * self.TREESIZE
+        self.stock = [0] * self.TREESIZE
+        self.s_node = [0] * (self.TREESIZE // 2)
+        self.freq = [0] * self.TREESIZE
+
+        (self.decode_c, self.decode_p, self.decode_start) = self.decoders[interface.header.method]
 
     def make_table(self, nchar, bitlen, tablebits, table):
         """Make decoding table (from maketbl.c)"""
@@ -634,7 +677,7 @@ class Huf:
                 i += 1
             self.make_table(self.NC, self.c_len, 12, self.c_table)
 
-    def decode_c(self):
+    def decode_c_st1(self):
         if self.blocksize == 0:
             self.blocksize = self.b.getbits(16)
             self.read_pt_len(self.NT, self.TBIT, 3)
@@ -658,7 +701,7 @@ class Huf:
             self.b.fillbuf(self.c_len[j] - 12)
         return j
 
-    def decode_p(self):
+    def decode_p_st1(self, decode_count):
         j = self.pt_table[self.b.peekbits(8)]
         if j < self.np:
             self.b.fillbuf(self.pt_len[j])
@@ -678,15 +721,343 @@ class Huf:
             j = (1 << (j - 1)) + self.b.getbits(j - 1)
         return j
 
+    def decode_start_st1(self):
+        pass
+
+    def read_tree_c(self):
+        i = 0
+        while i < self.N1:
+            if self.b.getbits(1):
+                self.c_len[i] = self.b.getbits(self.LENFIELD) + 1
+            else:
+                self.c_len[i] = 0
+            i += 1
+            if i == 3 and self.c_len[0] == 1 and self.c_len[1] == 1 and self.c_len[2] == 1:
+                c = self.b.getbits(CBIT)
+                for j in range(0, self.N1):
+                    self.c_len[j] = 0
+                for j in range(0, 4096):
+                    self.c_table[j] = c
+                return
+        self.make_table(self.N1, self.c_len, 12, self.c_table)
+
+    def read_tree_p(self):
+        i = 0
+        while i < self.NP:
+            self.pt_len[i] = self.b.getbits(self.LENFIELD)
+            i += 1
+            if i == 3 and pt_len[0] == 1 and pt_len[1] == 1 and pt_len[2] == 1:
+                c = self.b.getbits(self.interface.dicbit - 6)
+                for j in range(0, self.NP):
+                    self.pt_len[j] = 0
+                for j in range(0, 256):
+                    self.pt_table[j] = c
+                return
+
+    def ready_made(self, method):
+        idx = 0
+        tbl = self.fixed[method]
+        j = tbl[idx]
+        idx += 1
+        weight = 1 << (16 - j)
+        code = 0
+        for i in range(0, self.np):
+            while tbl[idx] == i:
+                j += 1
+                idx += 1
+                weight >>= 1
+            self.pt_len[i] = j
+            self.pt_code[i] = code
+            code += weight
+
+    def decode_c_st0(self):
+        if self.blocksize == 0: # read block head
+            self.blocksize = self.b.getbits(self.BUFBITS) # read block blocksize
+            self.read_tree_c()
+            if self.b.getbits(1):
+                self.read_tree_p()
+            else:
+                self.ready_made(1)
+            self.make_table(self.NP, self.pt_len, 8, self.pt_table)
+        self.blocksize -= 1
+        j = self.c_table[self.b.peekbits(12)]
+        if j < self.N1:
+            self.b.fillbuf(c_len[j])
+        else:
+            self.b.fillbuf(12)
+            mask = 1 << (16 - 1)
+            while True:
+                if self.b.bitbuf & mask:
+                    j = self.right[j]
+                else:
+                    j = self.left[j]
+                mask >>= 1
+                if j < self.N1:
+                    break
+            self.b.fillbuf(c_len[j] - 12)
+        if j == self.N1 - 1:
+            j += self.b.getbits(self.EXTRABITS)
+        return j
+
+    def decode_p_st0(self, decode_count):
+        j = self.pt_table[self.b.peekbits(8)]
+        if j < self.np:
+            self.b.fillbuf(self.pt_len[j])
+        else:
+            self.b.fillbuf(8)
+            mask = 1 << (16 - 1)
+            while True:
+                if self.b.bitbuf & mask:
+                    j = self.right[j]
+                else:
+                    j = self.left[j]
+                mask >>= 1
+                if j < self.np:
+                    break
+            self.b.fillbuf(self.pt_len[j] - 8)
+        return (j << 6) + self.b.getbits(6)
+
+    def decode_start_st0(self):
+        self.np = 1 << (self.interface.dicbit - 6)
+
+    def start_c_dyn(self):
+        self.n1 = 512 if (self.n_max >= 256 + self.maxmatch - self.THRESHOLD + 1) else (self.n_max - 1)
+        for i in range(0, self.TREESIZE_C):
+            self.stock[i] = i
+            self.block[i] = 0
+        j = self.n_max * 2 - 2
+        for i in range(0, self.n_max):
+            self.freq[j] = 1
+            self.child[j] = ~i
+            self.s_node[i] = j
+            self.block[j] = 1
+            j -= 1
+        self.avail = 2
+        self.edge[1] = self.n_max - 1
+        i = self.n_max * 2 - 2
+        while j >= 0:
+            f = self.freq[j] = self.freq[i] + self.freq[i - 1]
+            self.child[j] = i
+            self.parent[i] = self.parent[i - 1] = j
+            if f == self.freq[j + 1]:
+                self.block[j] = self.block[j + 1]
+                self.edge[self.block[j]] = j
+            else:
+                self.block[j] = self.stock[self.avail]
+                self.avail += 1
+                self.edge[self.block[j]] = j
+            i -= 2
+            j -= 1
+
+    def start_p_dyn(self):
+        self.freq[self.ROOT_P] = 1
+        self.child[self.ROOT_P] = ~(self.N_CHAR)
+        self.s_node[self.N_CHAR] = self.ROOT_P
+        self.block[self.ROOT_P] = stock[self.avail]
+        self.avail += 1
+        self.edge[self.block[self.ROOT_P]] = self.ROOT_P
+        self.most_p = self.ROOT_P
+        self.total_p = 0
+        self.nn = 1 << self.dicbit
+        self.nextcount = 64
+
+    def decode_start_dyn(self):
+        self.n_max = 286
+        maxmatch = MAXMATCH
+        start_c_dyn()
+        start_p_dyn()
+
+    def reconst(self, start, end):
+        j = start
+        for i in range(start, end):
+            if (k := self.child[i]) < 0:
+                self.freq[j] = (self.freq[i] + 1) // 2
+                self.child[j] = k
+                j += 1
+            b = self.block[i]
+            if self.edge[b] == i:
+                self.avail -= 1
+                self.stock[self.avail] = b
+        j -= 1
+        i = end - 1
+        l = end - 2
+        while i >= start:
+            while i >= l:
+                self.freq[i] = self.freq[j]
+                self.child[i] = self.child[j]
+                i -= 1
+                j -= 1
+            f = self.freq[l] + self.freq[l + 1]
+            k = start
+            while f < self.freq[k]:
+                k += 1
+            while j >= k:
+                self.freq[i] = self.freq[j]
+                self.child[i] = self.child[j]
+                i -= 1
+                j -= 1
+            self.freq[i] = f
+            self.child[i] = l + 1
+            i -= 1
+            l -= 2
+        f = 0
+        for i in range(start, end):
+            if (j := self.child[i]) < 0:
+                self.s_node[~j] = i
+            else:
+                self.parent[j] = self.parent[j - 1] = i
+            if (g := self.freq[i]) == f:
+                self.block[i] = b
+            else:
+                b = self.block[i] = self.stock[self.avail]
+                self.avail += 1
+                self.edge[b] = i
+                f = g
+
+    def swap_inc(self, p):
+        b = self.block[p]
+        if (q := self.edge[b]) != p: # swap for leader
+            r = self.child[p]
+            s = self.child[q]
+            self.child[p] = s
+            self.child[q] = r
+            if r >= 0:
+                self.parent[r] = self.parent[r - 1] = q
+            else:
+                self.s_node[~r] = q
+            if s >= 0:
+                self.parent[s] = self.parent[s - 1] = p
+            else:
+                self.s_node[~s] = p
+            p = q
+            self.edge[b] += 1
+            self.freq[p] += 1
+            if self.freq[p] == self.freq[p - 1]:
+                self.block[p] = self.block[p - 1]
+            else:
+                self.block[p] = self.stock[self.avail]
+                self.avail += 1
+                self.edge[self.block[p]] = p # create block
+        elif b == self.block[p + 1]:
+            self.edge[b] += 1
+            self.freq[p] += 1
+            if self.freq[p] == self.freq[p - 1]:
+                self.block[p] = self.block[p - 1]
+            else:
+                self.block[p] = self.stock[self.avail]
+                self.avail += 1
+                self.edge[self.block[p]] = p # create block
+        else:
+            self.freq[p] += 1
+            if self.freq[p] == self.freq[p - 1]:
+                self.avail -= 1
+                self.stock[self.avail] = b # delete block
+                self.block[p] = self.block[p - 1]
+        return self.parent[p]
+
+    def update_c(self, p):
+        if self.freq[self.ROOT_C] == 0x8000:
+            self.reconst(0, self.n_max * 2 - 1)
+        self.freq[self.ROOT_C] += 1
+        q = self.s_node[p]
+        while True:
+            q = self.swap_inc(q)
+            if q == self.ROOT_C:
+                break
+
+    def update_p(self, p):
+        if self.total_p == 0x8000:
+            self.reconst(self.ROOT_P, self.most_p + 1)
+            self.total_p = self.freq[self.ROOT_P]
+            self.freq[ROOT_P] = 0xffff
+        q = self.s_node[p + self.N_CHAR]
+        while q != ROOT_P:
+            q = self.swap_inc(q)
+        self.total_p += 1
+
+    def make_new_node(self, p):
+        r = self.most_p + 1
+        q = r + 1
+        self.child[r] = self.child[self.most_p]
+        self.s_node[~(self.child[r])] = r
+        self.child[q] = ~(p + self.N_CHAR)
+        self.child[self.most_p] = q
+        self.freq[r] = self.freq[self.most_p]
+        self.freq[q] = 0
+        self.block[r] = self.block[self.most_p]
+        if self.most_p == self.ROOT_P:
+            self.freq[self.ROOT_P] = 0xffff
+            self.edge[self.block[self.ROOT_P]] += 1
+        self.parent[r] = self.parent[q] = self.most_p
+        self.block[q] = stock[self.avail]
+        self.avail += 1
+        self.edge[self.block[q]] = self.s_node[p + self.N_CHAR] = self.most_p = q
+        self.update_p(p)
+
+    def decode_c_dyn(self):
+        c = self.child[self.ROOT_C]
+        buf = self.b.bitbuf
+        cnt = 0
+        while True:
+            mask = 1 << (16 - 1)
+            offset = 1 if mask & buf else 0
+            c = self.child[c - offset]
+            buf <<= 1
+            cnt += 1
+            if cnt == 16:
+                self.b.fillbuf(16)
+                buf = self.b.bitbuf
+                cnt = 0
+            if c <= 0:
+                break
+        self.b.fillbuf(cnt)
+        c = ~c
+        self.update_c(c)
+        if c == self.n1:
+            c += self.b.getbits(8)
+        return c
+
+    def decode_p_dyn(self, decode_count):
+        while decode_count > self.nextcount:
+            self.make_new_node(self.nextcount // 64)
+            self.nextcount += 64
+            if self.nextcount >= nn:
+                self.nextcount = 0xffffffff
+        c = self.child[self.ROOT_P]
+        buf = self.b.bitbuf
+        cnt = 0
+        while c > 0:
+            mask = 1 << (16 - 1)
+            offset = 1 if mask & buf else 0
+            c = self.child[c - offset]
+            buf <<= 1
+            cnt += 1
+            if cnt == 16:
+                self.b.fillbuf(16)
+                buf = self.b.bitbuf
+                cnt = 0
+        self.b.fillbuf(cnt)
+        c = (~c) - self.N_CHAR
+        self.update_p(c)
+        return (c << 6) + self.b.getbits(6)
+
+    def decode_start_fix(self):
+        self.n_max = 314
+        self.maxmatch = 60
+        self.np = 1 << (self.interface.dicbit - 6)
+        self.start_c_dyn()
+        self.ready_made(0)
+        self.make_table(self.np, self.pt_len, 8, self.pt_table)
+
 ##############################################################################
 
 class Interface:
     """Decoder interface (extract.c:decode_lzhuf())"""
     methods = {
         b'-lh0-': (False,  0, 0,  0),          # None
-#        b'-lh1-': (False, 12, 0,  0),          # dyn,st0,fix
-#        b'-lh2-': (False, 13, 0,  0),          # dyn,dyn,syn
-#        b'-lh3-': (False, 13, 0,  0),          # st0,st0,st0
+        b'-lh1-': (False, 12, 0,  0),          # dyn,st0,fix
+        b'-lh2-': (False, 13, 0,  0),          # dyn,dyn,syn
+        b'-lh3-': (False, 13, 0,  0),          # st0,st0,st0
         b'-lh4-': (False, 12, 4, 14),          # st1,st1,st1
         b'-lh5-': (False, 13, 4, 14),          # st1,st1,st1
         b'-lh6-': (False, 15, 5, 16),          # st1,st1,st1
@@ -727,6 +1098,7 @@ def decode(interface):
     dicsiz1 = dicsiz - 1
     adjust = 256 - huf.THRESHOLD
 
+    huf.decode_start()
     decode_count = 0
     loc = 0
     while decode_count < interface.header.original_size:
@@ -744,7 +1116,7 @@ def decode(interface):
                 pass
             match =  MatchData
             match.len = c - adjust
-            match.off = huf.decode_p() + 1
+            match.off = huf.decode_p(decode_count) + 1
             matchpos = (loc - match.off) & dicsiz1
             decode_count += match.len
             for i in range(match.len):
@@ -765,7 +1137,7 @@ def decode(interface):
 def decode_lzhuf(interface):
     """Decode LzHuf (from extract.c)"""
     if interface.dicbit == 0:
-        buf = fh.read(interface.original)
+        buf = interface.fh.read(interface.original)
         crc = interface.crcio.calccrc(0, buf, len(buf))
         interface.fo.write(buf)
     else:
@@ -790,7 +1162,7 @@ def extract_one(fh, header):
         interface.fo.close()
 
         if interface.header.has_crc and crc != interface.header.crc:
-            raise RuntimeError(f"CRC error: {header.name}")
+            raise RuntimeError(f"CRC error: {header.name} computed: 0x{crc:04x} header: 0x{interface.header.crc:04x}")
         res = interface.packed
 
     try:
@@ -834,7 +1206,7 @@ def usage():
     print('Simple LZH archive extractor -- unlha.py')
     print('Python version copyright (c) 2024 Yuichi Nakamura (@yunkya2)')
     print(' URL: https://github.com/yunkay2/unlha')
-    print(' LICENSE condition: https://github.com/yunkay2/unlha/blob/main/LICENSE')
+    print(' LICENSE condition: https://github.com/yunkya2/unlha/blob/main/LICENSE')
     print('----------------------------------------------------------------')
     print('This software is derived from "LHa for UNIX with Autoconf"')
     print('LHarc    for UNIX  V 1.02  Copyright(C) 1989  Y.Tagawa')
