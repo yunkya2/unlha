@@ -1,8 +1,11 @@
+#!/usr/bin/env python3
+
 import argparse
 import datetime
 import filecmp
 import os
 import random
+import sys
 
 import unlha
 
@@ -22,7 +25,7 @@ def run(args):
     os.makedirs(decompressed_dir, exist_ok=True)
     filesize = random.randint(1_000_000, 6_000_000)
     print(f'filesize = {filesize}')
-    random_ascii_data = bytes(random.randint(' ', '~') for _ in range(filesize))
+    random_ascii_data = bytes(random.randint(ord(' '), ord('~')) for _ in range(filesize))
     random_filename_basename = f'rand_{now_str}.rand'
     random_filename = os.path.join(random_dir, random_filename_basename)
     print(f'random_filename = {random_filename}')
@@ -50,6 +53,7 @@ def run(args):
         os.remove(decompressed_filename)
     else:
         print(f'Files {random_filename} and {decompressed_filename} are different')
+        sys.exit(1)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--lha", action='store', required=False, default='lha')
