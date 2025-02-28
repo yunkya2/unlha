@@ -18,7 +18,7 @@ Python 3 の実行環境さえあれば LZH アーカイブを展開すること
 
 * Python 言語のみで書かれている LZH アーカイブの展開専用ツールです
 * スクリプトファイル 1 つのみで、Python 標準ライブラリ以外の外部ライブラリにはまったく依存していません
-* 対応する圧縮形式は lh0(非圧縮), lh4, lh5, lh6, lh7 のみです
+* 対応する圧縮形式は lh0(非圧縮)/lh1/lh2/lh3/lh4/lh5/lh6/lh7 です
 * 対応するヘッダはレベル 0, 1, 2 です
 * アーカイブ内の日本語ファイル名はシフト JIS (CP932) と UTF-8 のみ対応しています
 * アーカイブ内のタイムスタンプは認識しますが、UNIX ファイル属性等は無視します
@@ -60,3 +60,5 @@ LHa      for UNIX  V 1.14i Modified     2000  Tsugio Okamoto
 LHA-PMA  for UNIX  V 2     PMA added    2000  Maarten ter Huurne
                    Autoconfiscated 2001-2008  Koji Arai
 ```
+
+Pierre Zurek さんに lh1/lh2/lh3 対応コードを取りこんでいただきました。感謝します。
